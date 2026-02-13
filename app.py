@@ -1210,7 +1210,21 @@ DETECTABLE_DISEASES = {
 def load_model():
     """Load the trained disease detection model"""
     try:
-        return keras.models.load_model('leaf_guard_best.h5')
+        # Suppress TensorFlow warnings
+        import os
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+        
+        # Load model with compile=False to avoid version issues
+        model = keras.models.load_model('leaf_guard_best.h5', compile=False)
+        
+        # Recompile with current TensorFlow version
+        model.compile(
+            optimizer='adam',
+            loss='categorical_crossentropy',
+            metrics=['accuracy']
+        )
+        
+        return model
     except Exception as e:
         st.error(f"Model loading error: {str(e)}")
         return None
