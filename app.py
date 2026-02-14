@@ -1401,19 +1401,87 @@ def get_disease_info(disease_name, disease_db):
 
 def preprocess_image(image):
     """Preprocess image for model prediction"""
-    img = image.resize((224, 224))
-    img_array = np.array(img) / 255.0
-    return np.expand_dims(img_array, axis=0)
+    try:
+        # Convert to RGB (handles RGBA, L, P modes)
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Resize to model input size
+        img = image.resize((224, 224))
+        
+        # Convert to array and normalize
+        img_array = np.array(img, dtype=np.float32) / 255.0
+        
+        # Add batch dimension
+        img_array = np.expand_dims(img_array, axis=0)
+        
+        return img_array
+    except Exception as e:
+        st.error(f"Error processing image: {str(e)}")
+        return None
+    
+def validate_image(image):
+    """Validate if image is likely a plant leaf"""
+    try:
+        # Convert to RGB if needed
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Check image dimensions
+        width, height = image.size
+        
+        if width < 50 or height < 50:
+            return False, "Image is too small. Please upload a larger image (minimum 50x50 pixels)."
+        
+        if width > 4000 or height > 4000:
+            return False, "Image is too large. Please upload a smaller image (maximum 4000x4000 pixels)."
+        
+        # Check if image is mostly green (basic leaf detection)
+        img_array = np.array(image.resize((100, 100)))
+        
+        # Calculate average color channels
+        r_avg = np.mean(img_array[:, :, 0])
+        g_avg = np.mean(img_array[:, :, 1])
+        b_avg = np.mean(img_array[:, :, 2])
+        
+        # Very basic check: leaves usually have more green
+        # This is a loose check - you can adjust thresholds
+        if g_avg < 50 and r_avg < 50 and b_avg < 50:
+            return False, "⚠️ Warning: Image appears very dark. Please upload a well-lit image."
+        
+        return True, "Image validated successfully"
+        
+    except Exception as e:
+        return False, f"Error validating image: {str(e)}"
 
 def predict_disease(model, image, class_names):
     """Predict disease from image and return top 3 predictions"""
-    processed_img = preprocess_image(image)
-    predictions = model.predict(processed_img, verbose=0)
-    top_3_idx = np.argsort(predictions[0])[-3:][::-1]
-    return [{
-        'disease': class_names[idx],
-        'confidence': float(predictions[0][idx]) * 100
-    } for idx in top_3_idx]
+    try:
+        processed_img = preprocess_image(image)
+        
+        if processed_img is None:
+            return None
+        
+        # Make prediction
+        predictions = model.predict(processed_img, verbose=0)
+        
+        # Get top 3 predictions
+        top_3_idx = np.argsort(predictions[0])[-3:][::-1]
+        
+        results = [{
+            'disease': class_names[idx],
+            'confidence': float(predictions[0][idx]) * 100
+        } for idx in top_3_idx]
+        
+        # Check if top prediction confidence is too low
+        if results[0]['confidence'] < 30:
+            st.warning("⚠️ **Low Confidence Detection**: The uploaded image may not be a plant leaf or the disease is not in our database. Please upload a clear image of an affected leaf.")
+        
+        return results
+        
+    except Exception as e:
+        st.error(f"Prediction error: {str(e)}")
+        return None
 
 def calculate_treatment_cost(disease_info, acres):
     """Calculate treatment cost for given acreage"""
@@ -1544,96 +1612,133 @@ def main():
                 st.markdown(f"#### {t['ai_analysis']}")
                 
                 if st.button(t['analyze_disease'], use_container_width=True, type="primary"):
-                    with st.spinner(t['analyzing']):
-                        results = predict_disease(model, image, class_names)
-                        
-                        disease = results[0]['disease']
-                        confidence = results[0]['confidence']
-                        
-                        # Main Result Card
-                        st.markdown(f"""
-                        <div class="result-card fade-in">
-                            <div style="text-align: center;">
-                                <div class="disease-badge">{disease.replace('___', ' ').replace('_', ' ').title()}</div>
-                            </div>
-                            <div class="confidence-meter">
-                                <div class="confidence-value">{confidence:.2f}%</div>
-                                <div style="color: rgba(255, 235, 205, 0.7); font-size: 1rem; margin-top: 0.5rem; text-transform: uppercase; letter-spacing: 0.08em;">{t['confidence_level']}</div>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Top 3 Predictions
-                        st.markdown(f"### {t['detection_probabilities']}")
-                        for i, result in enumerate(results, 1):
-                            col_a, col_b = st.columns([3, 1])
-                            with col_a:
-                                st.write(f"**{i}. {result['disease'].replace('___', ' ').replace('_', ' ').title()}**")
-                                st.progress(result['confidence'] / 100)
-                            with col_b:
-                                st.metric("", f"{result['confidence']:.1f}%")
-                        
-                        # Get disease information
-                        info = get_disease_info(disease, disease_db)
-                        
-                        # Symptoms
-                        st.markdown(f"""
-                        <div class="info-section">
-                            <div class="section-title">{t['disease_symptoms']}</div>
-                            <div class="section-content">{info['symptoms']}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Treatment Options
-                        col_t1, col_t2 = st.columns(2)
-                        
-                        with col_t1:
-                            st.markdown(f"""
-                            <div class="info-section">
-                                <div class="section-title">{t['organic_treatment']}</div>
-                                <div class="section-content">{info.get('organic_treatment', 'Consult agricultural expert')}</div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        
-                        with col_t2:
-                            st.markdown(f"""
-                            <div class="info-section">
-                                <div class="section-title">{t['chemical_treatment']}</div>
-                                <div class="section-content">{info.get('chemical_treatment', 'Consult agricultural expert')}</div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        
-                        # Prevention
-                        st.markdown(f"""
-                        <div class="info-section">
-                            <div class="section-title">{t['prevention_strategies']}</div>
-                            <div class="section-content">{info['prevention']}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Important Facts
-                        st.markdown(f"### {t['key_facts']}")
-                        facts_cols = st.columns(2)
-                        for idx, fact in enumerate(info['facts']):
-                            with facts_cols[idx % 2]:
-                                st.info(fact)
-                        
-                        # Save to history
-                        buffered = BytesIO()
-                        image.save(buffered, format="PNG")
-                        img_str = base64.b64encode(buffered.getvalue()).decode()
-                        
-                        st.session_state.scan_history.insert(0, {
-                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            'image': img_str,
-                            'disease': disease,
-                            'confidence': confidence
-                        })
-                        
-                        if len(st.session_state.scan_history) > 100:
-                            st.session_state.scan_history = st.session_state.scan_history[:100]
-                        
-                        st.success(t['analysis_complete'])
+                    # Validate image first
+                    is_valid, validation_message = validate_image(image)
+                    
+                    if not is_valid:
+                        st.error(validation_message)
+                    else:
+                        with st.spinner(t['analyzing']):
+                            results = predict_disease(model, image, class_names)
+                            
+                            if results is None:
+                                st.error("❌ Failed to analyze image. Please try again with a different image.")
+                            else:
+                                disease = results[0]['disease']
+                                confidence = results[0]['confidence']
+                                
+                                # Warn if confidence is low
+                                if confidence < 50:
+                                    st.warning(f"""
+                                    ⚠️ **Low Confidence Detection ({confidence:.1f}%)**
+                                    
+                                    The model is not very confident about this prediction. This could mean:
+                                    - The image might not be a plant leaf
+                                    - The disease is not in our database
+                                    - The image quality needs improvement
+                                    - The leaf might be healthy but appears diseased due to lighting/angle
+                                    
+                                    **Please try:**
+                                    - Uploading a clearer, well-lit image
+                                    - Ensuring the image shows an actual plant leaf
+                                    - Taking the photo in natural daylight
+                                    - Focusing on the affected area of the leaf
+                                    """)
+                                
+                                # Main Result Card
+                                st.markdown(f"""
+                                <div class="result-card fade-in">
+                                    <div style="text-align: center;">
+                                        <div class="disease-badge">{disease.replace('___', ' ').replace('_', ' ').title()}</div>
+                                    </div>
+                                    <div class="confidence-meter">
+                                        <div class="confidence-value">{confidence:.2f}%</div>
+                                        <div style="color: rgba(255, 255, 255, 0.7); font-size: 1rem; margin-top: 0.5rem; text-transform: uppercase; letter-spacing: 0.08em;">{t['confidence_level']}</div>
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                
+                                # Top 3 Predictions
+                                st.markdown(f"### {t['detection_probabilities']}")
+                                for i, result in enumerate(results, 1):
+                                    col_a, col_b = st.columns([3, 1])
+                                    with col_a:
+                                        st.write(f"**{i}. {result['disease'].replace('___', ' ').replace('_', ' ').title()}**")
+                                        st.progress(result['confidence'] / 100)
+                                    with col_b:
+                                        st.metric("", f"{result['confidence']:.1f}%")
+                                
+                                # Get disease information
+                                info = get_disease_info(disease, disease_db)
+                                
+                                # Symptoms
+                                st.markdown(f"""
+                                <div class="info-section">
+                                    <div class="section-title">{t['disease_symptoms']}</div>
+                                    <div class="section-content">{info['symptoms']}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                
+                                # Treatment Options
+                                col_t1, col_t2 = st.columns(2)
+                                
+                                with col_t1:
+                                    st.markdown(f"""
+                                    <div class="info-section">
+                                        <div class="section-title">{t['organic_treatment']}</div>
+                                        <div class="section-content">{info.get('organic_treatment', 'Consult agricultural expert')}</div>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                
+                                with col_t2:
+                                    st.markdown(f"""
+                                    <div class="info-section">
+                                        <div class="section-title">{t['chemical_treatment']}</div>
+                                        <div class="section-content">{info.get('chemical_treatment', 'Consult agricultural expert')}</div>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                
+                                # Prevention
+                                st.markdown(f"""
+                                <div class="info-section">
+                                    <div class="section-title">{t['prevention_strategies']}</div>
+                                    <div class="section-content">{info['prevention']}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                
+                                # Important Facts
+                                st.markdown(f"### {t['key_facts']}")
+                                facts_cols = st.columns(2)
+                                for idx, fact in enumerate(info['facts']):
+                                    with facts_cols[idx % 2]:
+                                        st.info(fact)
+                                
+                                # Save to history (only if confidence is reasonable)
+                                if confidence >= 30:  # Only save if confidence is at least 30%
+                                    try:
+                                        buffered = BytesIO()
+                                        # Convert to RGB before saving
+                                        if image.mode != 'RGB':
+                                            image = image.convert('RGB')
+                                        image.save(buffered, format="PNG")
+                                        img_str = base64.b64encode(buffered.getvalue()).decode()
+                                        
+                                        st.session_state.scan_history.insert(0, {
+                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            'image': img_str,
+                                            'disease': disease,
+                                            'confidence': confidence
+                                        })
+                                        
+                                        # Keep only last 100 scans
+                                        if len(st.session_state.scan_history) > 100:
+                                            st.session_state.scan_history = st.session_state.scan_history[:100]
+                                        
+                                        st.success(t['analysis_complete'])
+                                    except Exception as e:
+                                        st.warning(f"⚠️ Analysis complete, but couldn't save to history: {str(e)}")
+                                else:
+                                    st.warning("⚠️ Result not saved to history due to low confidence. Please upload a clearer image of a plant leaf.")
             else:
                 st.info(t['upload_to_begin'])
                 
@@ -1897,6 +2002,33 @@ def main():
     with tab5:
         st.markdown(f"### {t['scan_history']}")
         
+        # Add download history button
+        if len(st.session_state.scan_history) > 0:
+            # Create downloadable CSV
+            import pandas as pd
+            
+            history_df = pd.DataFrame([
+                {
+                    'Timestamp': scan['timestamp'],
+                    'Disease': scan['disease'].replace('___', ' ').replace('_', ' ').title(),
+                    'Confidence': f"{scan['confidence']:.2f}%"
+                }
+                for scan in st.session_state.scan_history
+            ])
+            
+            csv = history_df.to_csv(index=False)
+            
+            col_download, col_stats = st.columns([1, 3])
+            
+            with col_download:
+                st.download_button(
+                    label="📥 Download History",
+                    data=csv,
+                    file_name=f"leaf_guard_history_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        
         if len(st.session_state.scan_history) == 0:
             st.markdown(f"""
             <div class="info-section" style="text-align: center; padding: 2.5rem;">
@@ -1938,15 +2070,15 @@ def main():
                 with col_info:
                     st.markdown(f"""
                     <div class="feature-card">
-                        <div style="font-size: 1.3rem; font-weight: 700; color: #ffb74d; margin-bottom: 0.65rem;">
+                        <div style="font-size: 1.3rem; font-weight: 700; color: #FFD700; margin-bottom: 0.65rem;">
                             {scan['disease'].replace('___', ' ').replace('_', ' ').title()}
                         </div>
                         <div style="display: flex; gap: 1rem; margin: 0.85rem 0; flex-wrap: wrap;">
-                            <div style="background: rgba(255, 183, 77, 0.2); padding: 0.45rem 0.95rem; border-radius: 8px; border: 1px solid rgba(255, 183, 77, 0.4);">
+                            <div style="background: rgba(255, 215, 0, 0.2); padding: 0.45rem 0.95rem; border-radius: 8px; border: 1px solid rgba(255, 215, 0, 0.4);">
                                 <strong>{t['confidence']}</strong> {scan['confidence']:.2f}%
                             </div>
                         </div>
-                        <div style="color: #ffb74d; font-weight: 600; margin-top: 0.85rem; font-size: 0.95rem;">
+                        <div style="color: #FFD700; font-weight: 600; margin-top: 0.85rem; font-size: 0.95rem;">
                             {scan['timestamp']}
                         </div>
                     </div>
